@@ -82,19 +82,28 @@ class RWKV5_TimeMixer(nn.Module):
         self.Wproj_out = nn.Linear(rwkv.d_model, rwkv.d_model, bias=False)
 
         # per-channel boost for current embedding
-        self.u = nn.Parameter(torch.ones(rwkv.n_heads, rwkv.d_model//rwkv.n_heads, 1))
+        self.u = nn.Parameter(torch.ones(rwkv.n_heads, rwkv.d_model//rwkv.n_heads))
 
         # per-channel decay multipliers applied to kv_state at each timestep
-        self.w = nn.Parameter(torch.ones(rwkv.n_heads, rwkv.d_model//rwkv.n_heads, 1))
+        self.w = nn.Parameter(torch.ones(rwkv.n_heads, rwkv.d_model//rwkv.n_heads))
         
         self.group_norm = nn.GroupNorm(rwkv.n_heads, rwkv.d_model, eps=64e-5)
 
     @staticmethod
     def single_timestep(r, k, v, u, w, kv_state): 
-        kv = k @ v              # BHK1 @ BH1V = BHKV
-        out = r @ (kv * u + kv_state)  # BH1K @ (BHKV * HK1 + BHKV) = BH1V
-        kv_state = kv_state * w + kv          # BHKV * HK1 + BHKV = BHKV
-        return out.squeeze(-2), kv_state    
+        # start with the existing kv state
+        y = kv_state        # BHKV
+        # apply the u boost to the current k @ v and add it to that
+        y = y + (k @ v) * u # BHKV * HK1 + BHKV = BHKV
+        # apply receptance to that whole result
+        out = r @ y         # BH1K @ BHKV = BH1V
+
+        # finally, decay the kv state and add in the latest k @ v
+        kv_state = kv_state * w         # BHKV
+        kv_state = kv_state + (k @ v)   # BHKV * HK1 + BHKV = BHKV
+
+        # remove an extra useless dimension from the output
+        return out.squeeze(-2), kv_state # BHV, BHKV
 
     def forward(self, x : Tensor, x_state : Tensor, kv_state : Tensor): # x (B,T,C), x_state (B,C), kv_state (B,H,K,V)
         B, T, C, H, K = x.size(0), x.size(1), self.rwkv.d_model, self.rwkv.n_heads, self.rwkv.d_model // self.rwkv.n_heads
@@ -110,9 +119,14 @@ class RWKV5_TimeMixer(nn.Module):
         v = self.Wproj_v(vx).view(B,T,H,1,K) # BTH1K
         gate = self.Wproj_g(gatex) # BTC
 
+        # adding an extra dimension for convenience in multiplication later
+        u = self.u.unsqueeze(-1) # HK1
+        # this forces the decays to end up in the range 0...1 using a nicely differentiable function
+        w = torch.exp(-torch.exp(self.w.unsqueeze(-1))).unsqueeze(-1).to(u.dtype) # HK1
+
         out = torch.empty(B, T, H, K, dtype=x.dtype, device=x.device)
         for t in range(T):
-            out[:,t], s = RWKV5_TimeMixer.single_timestep(r[:,t], k[:,t], v[:,t], self.u, self.w, kv_state)
+            out[:,t], s = RWKV5_TimeMixer.single_timestep(r[:,t], k[:,t], v[:,t], u, w, kv_state)
 
         # apply group normalization to each head
         out = self.group_norm(out.view(B*T, C)).view(B, T, C) # BTC
