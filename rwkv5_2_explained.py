@@ -28,6 +28,10 @@ class RWKV5(torch.nn.Module):
 
         # calculate embeddings for each incoming token, then normalize them
         # see https://github.com/BlinkDL/SmallInitEmb for details on why we do this normalization
+        # if you look at some literature on pre-genereated embeddings, you'll see that they are 
+        #  often ideally considered to become unit length vectors around the hypersphere 
+        #  so starting it as small noise while using a normalized version instantly causes this layout, 
+        #  allowing them to initially move rapidly around the surface of that hypersphere, and later more slowly
         x = self.embed_norm(nn.functional.embedding(x, self.embed))
 
         # run each layer in succession, passing in the RNN state for that layer
@@ -55,6 +59,10 @@ class RWKV5_Layer(nn.Module):
         return x, s
 
 def token_shift(x, x_state, *Wlerps):
+    # token shift is like a a very efficient 1D convolution with kernel size 2, similar to undilated causal conv in WaveNet
+    # this gives each head the ability to choose which parts of the time-series to pay attention to
+    # it acts like a vertical forget gate between layers, choosing which parts of the recent past to accrue and which to ignore
+
     # we want the token embeddings shifted over by one towards the past
     # to get this, we take the last token embedding processed and append all but one of the current token embeddings to it
     # (the last token embedding processed is what's stored in the x_state)
@@ -157,6 +165,9 @@ class RWKV5_ChannelMixer(nn.Module):
         inx, gatex = token_shift(x, x_state, self.Wlerp_in, self.Wlerp_g)
 
         # project to 3x larger hidden dimension
+        # this is 4x for vanilla transformers FFN, but it's typical to reduce it when adding new parameters 
+        #  to allow comparison models with the same number of total parameters for a given d_model, n_layer
+        # in rwkv5's case, if you drop it down to 3x you end up making up for the extra parameters in the gate
         hidden = self.Win(inx)
 
         # relu^2 activation function
