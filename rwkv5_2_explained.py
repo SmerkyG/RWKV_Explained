@@ -122,7 +122,7 @@ class RWKV5_TimeMixer(nn.Module):
         # adding an extra dimension for convenience in multiplication later
         u = self.u.unsqueeze(-1) # HK1
         # this forces the decays to end up in the range 0...1 using a nicely differentiable function
-        w = torch.exp(-torch.exp(self.w.unsqueeze(-1))).unsqueeze(-1).to(u.dtype) # HK1
+        w = torch.exp(-torch.exp(self.w)).unsqueeze(-1).to(u.dtype) # HK1
 
         out = torch.empty(B, T, H, K, dtype=x.dtype, device=x.device)
         for t in range(T):
