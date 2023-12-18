@@ -161,7 +161,7 @@ class TimeMixer(nn.Module):
 
         out = torch.empty(B, T, H, K, dtype=x.dtype, device=x.device)
         for t in range(T):
-            out[:,t], s = TimeMixer.single_timestep(r[:,t], k[:,t], v[:,t], u, w[t], kv_state)
+            out[:,t], kv_state = TimeMixer.single_timestep(r[:,t], k[:,t], v[:,t], u, w[t], kv_state)
 
         # apply group normalization to each head and recombine the heads
         out = self.group_norm(out.view(B*T, C)).view(B, T, C) # BTC
