@@ -13,6 +13,7 @@ class RWKV(torch.nn.Module):
         self.embed_norm = nn.LayerNorm(cfg.d_model)
         self.layers = nn.ModuleList([Layer(cfg, layer_id) for layer_id in range(cfg.n_layers)])
         self.out_norm = nn.LayerNorm(cfg.d_model)
+        self.unembed = nn.Linear(cfg.d_model, cfg.n_embed, bias=False)
 
     # input tensor dimensions:
     #   x (B,T)
@@ -34,9 +35,8 @@ class RWKV(torch.nn.Module):
         # normalize the output
         x = self.out_norm(x)
 
-        # unembed back to dictionary indices via weight tying of the embedding weights
-        # this is just the opposite transformation as the original embedding calculation
-        x = nn.functional.linear(x, self.embed)
+        # unembed back to dictionary indices
+        x = self.unembed(x)
 
         return x, s
 
