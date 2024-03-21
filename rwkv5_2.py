@@ -188,7 +188,6 @@ class ChannelMixer(nn.Module):
 
         # apply sigmoid gate
         gate = self.Wgate(gatex)
-        gate = torch.sigmoid(gate)
         out = out * torch.sigmoid(gate)
 
         return x + out, x[:, -1]
