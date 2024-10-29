@@ -51,13 +51,13 @@ class Layer(nn.Module):
         x, s.channel_mixer_x_state = self.channel_mixer(x, s.channel_mixer_x_state)
         return x, s
     
-class LoRA(nn.Module):
+class LoRA_MLP(nn.Module):
     def __init__(self, dim:int, dim_hidden:int, init_value : Tensor|None = None):
         super().__init__()
         init_value = init_value if init_value is not None else torch.zeros(dim)
         self.base = nn.Parameter(init_value)
-        self.Wa = nn.Linear(dim, dim_hidden, bias=False)
-        self.Wb = nn.Linear(dim_hidden, dim, bias=False)
+        self.W_a = nn.Linear(dim, dim_hidden, bias=False)
+        self.W_b = nn.Linear(dim_hidden, dim, bias=False)
 
     def forward(self, x : Tensor): # x (B,T,C)
         # this is rwkv's version of low rank adaptation
@@ -66,21 +66,21 @@ class LoRA(nn.Module):
         # the offset is calculated by taking token shifted x and squeezing it through shrinking and expanding linear layers
         # using tanh as an activation in the middle of that sandwich
         # this offers greatly reduced cost in terms of both computation and parameters than a single dim->dim linear layer
-        return self.base + self.Wb( nn.functional.tanh( self.Wa(x) ) )
+        return self.base + self.W_b( nn.functional.tanh( self.W_a(x) ) )
 
 # data-dependent linear interpolation
 class DDLerp(nn.Module):
     def __init__(self, dim:int, dim_hidden:int):
         super().__init__()
-        self.Win = nn.Linear(dim, dim, bias=False)
-        self.lora = LoRA(dim, dim_hidden)
+        self.W_in = nn.Linear(dim, dim, bias=False)
+        self.lora = LoRA_MLP(dim, dim_hidden)
 
     def forward(self, x : Tensor, x_shifted_one_to_the_past : Tensor): # x (B,T,C)
         # a data-dependent linear interpolation between the current and previous token embeddings in the sequence
         # note that it is a per-channel interpolation amount, not just a single value per head
 
         # project the input
-        y = self.Win(x)
+        y = self.W_in(x)
 
         # linearly interpolate based on that result
         y = torch.lerp(x, x_shifted_one_to_the_past, y)
@@ -101,12 +101,12 @@ class TimeMixer(nn.Module):
         self.time_mixer_prenorm = nn.LayerNorm(cfg.d_model)
 
         self.ddlerps = [DDLerp(cfg.d_model, 32) for _ in range(5)]
-        self.w_lora = LoRA(cfg.d_model, 64, torch.ones(cfg.d_model))
-        self.Wproj_r = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
-        self.Wproj_k = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
-        self.Wproj_v = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
-        self.Wproj_g = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
-        self.Wproj_out = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
+        self.decay_lora = LoRA_MLP(cfg.d_model, 64, torch.ones(cfg.d_model))
+        self.W_proj_r = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
+        self.W_proj_k = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
+        self.W_proj_v = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
+        self.W_proj_g = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
+        self.W_proj_out = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
 
         # per-channel boost for current embedding
         self.u = nn.Parameter(torch.ones(cfg.n_heads, cfg.d_model//cfg.n_heads))
@@ -144,16 +144,16 @@ class TimeMixer(nn.Module):
                                            
         # project and separate out our vectors into attention heads
         # the extra dimensions are being added here to enable matrix multiplications per timestep
-        r = self.Wproj_r(rx).view(B,T,H,1,K) # BTH1K
-        k = self.Wproj_k(kx).view(B,T,H,K,1) # BTHK1
-        v = self.Wproj_v(vx).view(B,T,H,1,K) # BTH1K
-        gate = self.Wproj_g(gatex) # BTC
+        r = self.W_proj_r(rx).view(B,T,H,1,K) # BTH1K
+        k = self.W_proj_k(kx).view(B,T,H,K,1) # BTHK1
+        v = self.W_proj_v(vx).view(B,T,H,1,K) # BTH1K
+        gate = self.W_proj_g(gatex) # BTC
 
         # adding an extra dimension for convenience in multiplication later
         u = self.u.unsqueeze(-1) # HK1
 
         # per-channel data-dependent decays generated inexpensively via low rank adaptation
-        w = self.w_lora(wx)
+        w = self.decay_lora(wx)
         # separate out into attention heads
         w = w.view(T,H,K,1)
         # this forces the decays to end up in the range 0...1 using a nicely differentiable function
@@ -170,7 +170,7 @@ class TimeMixer(nn.Module):
         out = out * nn.functional.silu(gate) # BTC
 
         # project the output
-        out = self.Wproj_out(out) # BTC
+        out = self.W_proj_out(out) # BTC
 
         return x + out, x[:, -1], kv_state
 
