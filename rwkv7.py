@@ -1,10 +1,22 @@
 import torch
 from torch import nn, Tensor
 
-# config and layer state are unchanged from RWKV5
-from rwkv5_2 import Config, LayerState
+# config is unchanged from RWKV5
+from rwkv5_2 import Config
 # LoRA_MLP and DDLerp are unchanged from RWKV6
 from rwkv6 import LoRA_MLP, DDLerp
+
+class LayerState:
+    # the recurrent neural network (RNN) state for a layer of RWKV7
+    def __init__(self, x, cfg:Config):
+        B, T, C, H, K = x.size(0), x.size(1), cfg.d_model, cfg.n_heads, cfg.d_model // cfg.n_heads
+        V = K
+        # a (B,C) size tensor representing latest time mixer token embedding processed
+        self.time_mixer_x_state = torch.zeros(B,C,dtype=x.dtype,device=x.device)
+        # an (B,H,V,K) size tensor representing a decaying token embedding memory for each head, where H=number_of_heads, K=key_dim_per_head, V=value_dim_per_head 
+        self.vk_state = torch.zeros(B,H,V,K,dtype=x.dtype,device=x.device)
+        # a (B,C) size tensor representing latest channel mixer token embedding processed
+        self.channel_mixer_x_state = torch.zeros(B,C,dtype=x.dtype,device=x.device)
 
 class RWKV(torch.nn.Module):
     def __init__(self, cfg:Config = Config()):
@@ -48,7 +60,8 @@ class Layer(nn.Module):
         self.channel_mixer = ChannelMixer(cfg, layer_id)
 
     def forward(self, x : Tensor, s : LayerState):
-        x, s.time_mixer_x_state, s.kv_state = self.time_mixer(x, s.time_mixer_x_state, s.kv_state)
+        # PLEASE NOTE that the vk_state is in HVK order, *not* HKV as it was in RWKV-5 and RWKV-6, when it was called kv_state!
+        x, s.time_mixer_x_state, s.vk_state = self.time_mixer(x, s.time_mixer_x_state, s.vk_state)
         x, s.channel_mixer_x_state = self.channel_mixer(x, s.channel_mixer_x_state)
         return x, s
     
@@ -77,7 +90,8 @@ class TimeMixer(nn.Module):
 
         d_attn = d_model = cfg.d_model
 
-        self.ddlerps = [DDLerp(d_model, 32) for _ in range(4)]
+        self.W_ddlerp_premix = nn.Parameter(torch.zeros(cfg.d_model))
+        self.ddlerps = [DDLerp(d_model, 32) for _ in range(6)]
         self.decay_lora = LoRA_MLP(d_model, 64, torch.ones(d_model))
         self.W_proj_r = nn.Linear(d_model, d_model, bias=False)
         self.W_proj_k = nn.Linear(d_model, d_model, bias=False)
@@ -86,9 +100,9 @@ class TimeMixer(nn.Module):
 
         self.decay_lora_mlp = LoRA_MLP(d_model, 64 if d_model < 4096 else 128)
 
-        self.iclr_lora = LoRA_MLP(d_model, 16)
+        self.iclr_lora = LoRA_MLP(d_model, 64)
 
-        D_DEFORMED_KEY_LORA = 16
+        D_DEFORMED_KEY_LORA = 64
         self.deformed_key_w1 = nn.Parameter(torch.zeros(d_model, D_DEFORMED_KEY_LORA))
         self.deformed_key_w2 = nn.Parameter(torch.zeros(D_DEFORMED_KEY_LORA, d_attn).uniform_(-0.01, 0.01))
 
@@ -125,6 +139,8 @@ class TimeMixer(nn.Module):
 
     @staticmethod
     def single_timestep(r, k, v, decay, iclr, deformed_key, vk_state): 
+        # PLEASE NOTE that the vk_state is in HVK order, *not* HKV as it was in RWKV-5 and RWKV-6, when it was called kv_state!
+
         # transform inputs from BHK into column vectors BHK1
         r, k, v, decay, iclr, deformed_key = map(lambda x: x.unsqueeze(-1), (r, k, v, decay, iclr, deformed_key))
 
@@ -145,6 +161,8 @@ class TimeMixer(nn.Module):
         return out.squeeze(-1), vk_state # BHV, BHVK
 
     def forward(self, x : Tensor, x_state : Tensor, vk_state : Tensor): # x (B,T,C), x_state (B,C), vk_state (B,H,V,K)
+        # PLEASE NOTE that the vk_state is in HVK order, *not* HKV as it was in RWKV-5 and RWKV-6, when it was called kv_state!
+
         B, T, C, H, K = x.size(0), x.size(1), self.cfg.d_model, self.cfg.n_heads, self.cfg.d_model // self.cfg.n_heads
 
         x = self.time_mixer_prenorm(x)
@@ -154,10 +172,9 @@ class TimeMixer(nn.Module):
         # (the last token embedding processed is what's stored in the x_state)
         x_shifted_one_to_the_past = torch.cat((x_state.unsqueeze(-2), x[:,:-1]), dim=1)
 
-        # token shift the incoming token embeddings for the receptance, key, value, gate, and decay
-        x_receptance, x_key, x_value, x_decay = [ddlerp(x, x_shifted_one_to_the_past) for ddlerp in self.ddlerps]
-        x_gate = x_receptance   # the gate and receptance inputs are shared to save parameters
-        x_iclr = x_decay           # the iclr and decay inputs are shared to save parameters
+        # token shift the incoming token embeddings for the receptance, key, value, decay, iclr, and gate
+        x_premixed = torch.lerp(x, x_shifted_one_to_the_past, self.W_ddlerp_premix)
+        x_receptance, x_key, x_value, x_decay, x_iclr, x_gate = [ddlerp(x_premixed, x, x_shifted_one_to_the_past) for ddlerp in self.ddlerps]
                                            
         # project and separate out our vectors into attention heads
         # the extra dimensions are being added here to enable matrix multiplications per timestep
@@ -169,9 +186,9 @@ class TimeMixer(nn.Module):
         gate = torch.tanh(x_gate @ self.gate_w1) @ self.gate_w2 # BTC
 
         # decay is generated using a LoRA-MLP low parameter method, and then soft clamped to the range [-inf, -0.5]
-        log_log_of_decay = self.decay_lora_mlp(x_decay)                         # BTC
-        log_log_of_decay = -0.5 - nn.functional.softplus(-log_log_of_decay)   # BTC
-        log_of_decay = log_log_of_decay.exp()
+        log_neglog_of_decay = self.decay_lora_mlp(x_decay)                         # BTC
+        log_neglog_of_decay = -0.5 - nn.functional.softplus(-log_neglog_of_decay)   # BTC
+        log_of_decay = -torch.exp(log_neglog_of_decay)
         decay = log_of_decay.exp()
 
         # the next section is hard to understand unless you first understand how RWKV-7 modifies the delta rule:

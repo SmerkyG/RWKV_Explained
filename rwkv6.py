@@ -72,21 +72,14 @@ class LoRA_MLP(nn.Module):
 class DDLerp(nn.Module):
     def __init__(self, dim:int, dim_hidden:int):
         super().__init__()
-        self.W_in = nn.Linear(dim, dim, bias=False)
         self.lora = LoRA_MLP(dim, dim_hidden)
 
-    def forward(self, x : Tensor, x_shifted_one_to_the_past : Tensor): # x (B,T,C)
+    def forward(self, x_premixed: Tensor, x : Tensor, x_shifted_one_to_the_past : Tensor): # x (B,T,C)
         # a data-dependent linear interpolation between the current and previous token embeddings in the sequence
         # note that it is a per-channel interpolation amount, not just a single value per head
 
-        # project the input
-        y = self.W_in(x)
-
-        # linearly interpolate based on that result
-        y = torch.lerp(x, x_shifted_one_to_the_past, y)
-
         # lora the interpolated value
-        y = self.lora(y)
+        y = self.lora(x_premixed)
 
         # linearly interpolate again, this time based on the results of the lora
         y = torch.lerp(x, x_shifted_one_to_the_past, y)
@@ -100,6 +93,7 @@ class TimeMixer(nn.Module):
 
         self.time_mixer_prenorm = nn.LayerNorm(cfg.d_model)
 
+        self.W_ddlerp_premix = nn.Parameter(torch.zeros(cfg.d_model))
         self.ddlerps = [DDLerp(cfg.d_model, 32) for _ in range(5)]
         self.decay_lora = LoRA_MLP(cfg.d_model, 64, torch.ones(cfg.d_model))
         self.W_proj_r = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
@@ -140,7 +134,8 @@ class TimeMixer(nn.Module):
         x_shifted_one_to_the_past = torch.cat((x_state.unsqueeze(-2), x[:,:-1]), dim=1)
 
         # token shift the incoming token embeddings for the receptance, key, value, gate, and decay
-        rx, kx, vx, gatex, wx = [ddlerp(x, x_shifted_one_to_the_past) for ddlerp in self.ddlerps]
+        x_premixed = torch.lerp(x, x_shifted_one_to_the_past, self.W_ddlerp_premix)
+        rx, kx, vx, gatex, wx = [ddlerp(x_premixed, x, x_shifted_one_to_the_past) for ddlerp in self.ddlerps]
                                            
         # project and separate out our vectors into attention heads
         # the extra dimensions are being added here to enable matrix multiplications per timestep
