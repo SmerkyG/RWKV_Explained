@@ -231,7 +231,7 @@ class TimeMixer(nn.Module):
         # dynamically interpolate keys between original key and key*(1-decay) (this is for step 3 above)
         # note that key*(1-decay) is approximated here
         one_minus_decay_mix_amt_lora = torch.sigmoid(self.one_minus_decay_mix_amt_lora(x_key))
-        k = k * torch.clamp(log_of_decay * one_minus_decay_mix_amt_lora, max=0).exp()
+        k = k * torch.clamp(log_neglog_of_decay * one_minus_decay_mix_amt_lora, max=0).exp()
 
         # separate into heads (B,T,H,K)
         r, k, v, decay, iclr, deformed_key = map(lambda x: x.view(B,T,H,-1), (r, k, v, decay, iclr, deformed_key))
