@@ -100,7 +100,7 @@ class TimeMixer(nn.Module):
 
         self.decay_lora_mlp = LoRA_MLP(d_model, 64 if d_model < 4096 else 128)
 
-        self.iclr_lora = LoRA_MLP(d_model, 64)
+        self.iclr_lora = LoRA_Simple(d_model, 64)
 
         D_DEFORMED_KEY_LORA = 64
         self.deformed_key_w1 = nn.Parameter(torch.zeros(d_model, D_DEFORMED_KEY_LORA))
@@ -110,8 +110,8 @@ class TimeMixer(nn.Module):
         self.gate_w1 = nn.Parameter(torch.zeros(d_model, D_GATE_LORA))
         self.gate_w2 = nn.Parameter(torch.zeros(D_GATE_LORA, d_attn).uniform_(-0.01, 0.01))
 
-        self.iclr_mix_amt_lora = LoRA_MLP(d_model, 16)
-        self.one_minus_decay_mix_amt_lora = LoRA_MLP(d_model, 16)
+        self.iclr_mix_amt_lora = LoRA_Simple(d_model, 16)
+        self.one_minus_decay_mix_amt_lora = LoRA_Simple(d_model, 16)
 
         # per-channel boost for current embedding
         self.u = nn.Parameter(torch.ones(cfg.n_heads, cfg.d_model//cfg.n_heads))
