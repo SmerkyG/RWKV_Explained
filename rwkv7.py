@@ -222,7 +222,7 @@ class TimeMixer(nn.Module):
         iclr = torch.sigmoid( self.iclr_lora(x_iclr) )
 
         # the state transition matrix (see above) - not used, just for descriptive purposes
-        #state_transition_matrix = torch.diag(log_of_decay.exp()) - deformed_key @ (iclr * deformed_key).mT
+        #state_transition_matrix = torch.diag(decay) - deformed_key @ (iclr * deformed_key).mT
 
         # dynamically interpolate keys between original key and key*iclr (this is for step 3 above)
         iclr_mix_amt = torch.sigmoid(self.iclr_mix_amt_lora(x_iclr))
