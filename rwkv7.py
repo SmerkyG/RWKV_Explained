@@ -41,9 +41,10 @@ class RWKV(torch.nn.Module):
 
         s = s or [LayerState(x, self.cfg) for _ in range(self.cfg.n_layers)]
 
-        # run each layer in succession, passing in the RNN state for that layer
+        # run each layer in succession, passing in the 'value' originally calculated in layer zero and RNN state for that layer
+        v0 = torch.tensor([], device=x.device, dtype=x.dtype)
         for layer_id, block in enumerate(self.layers):  # run each rwkv block
-            x, s[layer_id] = block(x, s[layer_id])
+            x, v0, s[layer_id] = block(x, v0, s[layer_id])
 
         # normalize the output
         x = self.out_norm(x)
@@ -59,11 +60,11 @@ class Layer(nn.Module):
         self.time_mixer = TimeMixer(cfg, layer_id)
         self.channel_mixer = ChannelMixer(cfg, layer_id)
 
-    def forward(self, x : Tensor, s : LayerState):
+    def forward(self, x : Tensor, v0 : Tensor, s : LayerState):
         # PLEASE NOTE that the vk_state is in HVK order, *not* HKV as it was in RWKV-5 and RWKV-6, when it was called kv_state!
-        x, s.time_mixer_x_state, s.vk_state = self.time_mixer(x, s.time_mixer_x_state, s.vk_state)
+        x, v0, s.time_mixer_x_state, s.vk_state = self.time_mixer(x, v0, s.time_mixer_x_state, s.vk_state)
         x, s.channel_mixer_x_state = self.channel_mixer(x, s.channel_mixer_x_state)
-        return x, s
+        return x, v0, s
     
 class LoRA_Simple(nn.Module):
     def __init__(self, dim:int, dim_hidden:int, init_value : Tensor|None = None):
@@ -84,6 +85,7 @@ class LoRA_Simple(nn.Module):
 class TimeMixer(nn.Module):
     def __init__(self, cfg:Config, layer_id:int):
         super().__init__()
+        self.layer_id = layer_id
         self.cfg = cfg
 
         self.time_mixer_prenorm = nn.LayerNorm(cfg.d_model)
@@ -112,6 +114,7 @@ class TimeMixer(nn.Module):
 
         self.iclr_mix_amt_lora = LoRA_Simple(d_model, 16)
         self.one_minus_decay_mix_amt_lora = LoRA_Simple(d_model, 16)
+        self.v0_mix_amt_lora = LoRA_Simple(d_model, 32)
 
         # per-channel boost for current embedding
         self.u = nn.Parameter(torch.ones(cfg.n_heads, cfg.d_model//cfg.n_heads))
@@ -160,7 +163,7 @@ class TimeMixer(nn.Module):
         # remove an extra useless dimension from the output
         return out.squeeze(-1), vk_state # BHV, BHVK
 
-    def forward(self, x : Tensor, x_state : Tensor, vk_state : Tensor): # x (B,T,C), x_state (B,C), vk_state (B,H,V,K)
+    def forward(self, x : Tensor, v0 : Tensor, x_state : Tensor, vk_state : Tensor): # x (B,T,C), x_state (B,C), vk_state (B,H,V,K)
         # PLEASE NOTE that the vk_state is in HVK order, *not* HKV as it was in RWKV-5 and RWKV-6, when it was called kv_state!
 
         B, T, C, H, K = x.size(0), x.size(1), self.cfg.d_model, self.cfg.n_heads, self.cfg.d_model // self.cfg.n_heads
@@ -183,7 +186,7 @@ class TimeMixer(nn.Module):
         v = self.W_proj_v(x_value)      # BTC
 
         # gate is generated using a LoRA style low parameter method with no base
-        gate = torch.tanh(x_gate @ self.gate_w1) @ self.gate_w2 # BTC
+        gate = torch.sigmoid(x_gate @ self.gate_w1) @ self.gate_w2 # BTC
 
         # decay is generated using a LoRA-MLP low parameter method, and then soft clamped to the range [-inf, -0.5]
         log_neglog_of_decay = self.decay_lora_mlp(x_decay)                         # BTC
@@ -233,6 +236,13 @@ class TimeMixer(nn.Module):
         one_minus_decay_mix_amt_lora = torch.sigmoid(self.one_minus_decay_mix_amt_lora(x_key))
         k = k * torch.clamp(log_neglog_of_decay * one_minus_decay_mix_amt_lora, max=0).exp()
 
+        # dynamically interpoate values between the value from the first layer (v0) and the value for the current layer (v)
+        if self.layer_id == 0:
+            # in the first layer, just return the value for use in later layers rather than interpolate
+            v0 = v
+        else:
+            v = torch.lerp(v, v0, torch.sigmoid(self.v0_mix_amt_lora(x_value)))
+
         # separate into heads (B,T,H,K)
         r, k, v, decay, iclr, deformed_key = map(lambda x: x.view(B,T,H,-1), (r, k, v, decay, iclr, deformed_key))
 
@@ -254,7 +264,7 @@ class TimeMixer(nn.Module):
         # project the output
         out = self.W_proj_out(out) # BTC
 
-        return x + out, x[:, -1], vk_state
+        return x + out, v0, x[:, -1], vk_state
 
 class ChannelMixer(nn.Module):
     def __init__(self, cfg:Config, layer_id:int):
