@@ -5,6 +5,8 @@ from torch import nn, Tensor
 # config is unchanged from RWKV5
 from rwkv5_2 import Config
 
+from typing import Callable
+
 def ortho_init(x, scale):
     with torch.no_grad():
         shape = x.shape
@@ -79,12 +81,15 @@ class Layer(nn.Module):
         x, s.channel_mixer_x_state = self.channel_mixer(x, s.channel_mixer_x_state)
         return x, v0, s
 
-class LoRA_Simple(nn.Module):
-    def __init__(self, dim:int, dim_hidden:int, init_value : Tensor|None = None):
+def no_op(x): return x
+
+class LoRA(nn.Module):
+    def __init__(self, dim:int, dim_hidden:int, activation_fn:Callable = no_op, init_value : Tensor|None = None):
         super().__init__()
         init_value = init_value if init_value is not None else torch.zeros(dim)
         self.base = nn.Parameter(init_value)
         self.W_a = nn.Linear(dim, dim_hidden, bias=False)
+        self.activation_fn = activation_fn
         self.W_b = nn.Linear(dim_hidden, dim, bias=False)
 
         with torch.no_grad():
@@ -97,17 +102,7 @@ class LoRA_Simple(nn.Module):
         # the result has two components: a base value vector, and an offset
         # the offset is calculated by taking token shifted x and squeezing it through shrinking and expanding linear layers
         # this offers greatly reduced cost in terms of both computation and parameters than a single dim->dim linear layer
-        return self.base + self.W_b( self.W_a(x) )
-
-class LoRA_MLP(LoRA_Simple):
-    def forward(self, x : Tensor): # x (B,T,C)
-        # this is rwkv's version of low rank adaptation, with an added activation in the middle
-
-        # the result has two components: a base value vector, and an offset
-        # the offset is calculated by taking token shifted x and squeezing it through shrinking and expanding linear layers
-        # using tanh as an activation in the middle of that sandwich
-        # this offers greatly reduced cost in terms of both computation and parameters than a single dim->dim linear layer
-        return self.base + self.W_b( nn.functional.tanh( self.W_a(x) ) )
+        return self.base + self.W_b( self.activation_fn( self.W_a(x) ) )
 
 class TimeMixer(nn.Module):
     def __init__(self, cfg:Config, layer_id:int):
@@ -121,15 +116,15 @@ class TimeMixer(nn.Module):
             self.time_mixer_prenorm = nn.LayerNorm(cfg.d_model)
 
             self.lerps = [nn.Linear(d_model, d_model, bias=False) for _ in range(6)]
-            self.decay_lora = LoRA_MLP(d_model, 64, torch.ones(d_model))
+            self.decay_lora = LoRA(d_model, 64, lambda x: torch.tanh(x), torch.ones(d_model))
             self.W_proj_r = nn.Linear(d_model, d_model, bias=False)
             self.W_proj_k = nn.Linear(d_model, d_model, bias=False)
             self.W_proj_v = nn.Linear(d_model, d_model, bias=False)
             self.W_proj_out = nn.Linear(d_model, d_model, bias=False)
             
-            self.decay_lora_mlp = LoRA_MLP(d_model, 64 if d_model < 4096 else 128) # dim 64 for emb 768, change it for smaller/larger models
+            self.decay_lora_mlp = LoRA(d_model, 64 if d_model < 4096 else 128, torch.tanh) # dim 64 for emb 768, change it for smaller/larger models
            
-            self.iclr_lora = LoRA_Simple(d_model, 32) # dim 32 for emb 768, change it for smaller/larger models
+            self.iclr_lora = LoRA(d_model, 64 if d_model < 4096 else 128) # dim 64 for emb 768, change it for smaller/larger models
 
             self.W_deformed_key = nn.Parameter(torch.ones(1, 1, d_model))
             
@@ -140,7 +135,8 @@ class TimeMixer(nn.Module):
 
             self.iclr_mix_amt = nn.Parameter(torch.ones(1, 1, d_model))
 
-            self.v0_mix_amt_lora = LoRA_Simple(d_model, 64) # dim 64 for emb 768, change it for smaller/larger models
+            if layer_id > 0:
+                self.v0_mix_amt_lora = LoRA(d_model, 32 if d_model < 4096 else 64) # dim 32 for emb 768, change it for smaller/larger models
 
             # per-channel boost for current embedding
             self.u = nn.Parameter(torch.ones(cfg.n_heads, cfg.d_model//cfg.n_heads))
