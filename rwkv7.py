@@ -169,7 +169,7 @@ class TimeMixer(nn.Module):
 
         # add in an dynamically iclr mixed amount of the latest value at the key 
         # (key has been pre-adjusted in the calling code by the amount of iclr mixing)
-        vk_state = vk_state + (v.mT @ k)   # BHVK
+        vk_state = vk_state + (v @ k.mT)   # BHVK
 
         # apply receptance to the new state
         out = vk_state @ r  # BHVK @ BHK1 = BHV1
