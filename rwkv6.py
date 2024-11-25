@@ -123,10 +123,11 @@ class TimeMixer(nn.Module):
         # remove an extra useless dimension from the output
         return out.squeeze(-2), kv_state # BHV, BHKV
 
-    def forward(self, x : Tensor, x_state : Tensor, kv_state : Tensor): # x (B,T,C), x_state (B,C), kv_state (B,H,K,V)
-        B, T, C, H, K = x.size(0), x.size(1), self.cfg.d_model, self.cfg.n_heads, self.cfg.d_model // self.cfg.n_heads
+    def forward(self, hidden_state_in : Tensor, x_state : Tensor, kv_state : Tensor): # x (B,T,C), x_state (B,C), kv_state (B,H,K,V)
+        x = self.time_mixer_prenorm(hidden_state_in)
+        x_state_out = x[:, -1]
 
-        x = self.time_mixer_prenorm(x)
+        B, T, C, H, K = x.size(0), x.size(1), self.cfg.d_model, self.cfg.n_heads, self.cfg.d_model // self.cfg.n_heads
 
         # we want the token embeddings shifted over by one towards the past
         # to get this, we take the last token embedding processed and append all but one of the current token embeddings to it
@@ -167,7 +168,7 @@ class TimeMixer(nn.Module):
         # project the output
         out = self.W_proj_out(out) # BTC
 
-        return x + out, x[:, -1], kv_state
+        return hidden_state_in + out, x_state_out, kv_state
 
 if __name__ == "__main__":
     model = RWKV()

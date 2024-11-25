@@ -168,29 +168,30 @@ class ChannelMixer(nn.Module):
         self.Wlerp_g = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
         self.Wgate = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
 
-    def forward(self, x : Tensor, x_state : Tensor): # x (B,T,C), x_state (B,C)
-        x = self.prenorm(x)
+    def forward(self, hidden_state_in : Tensor, x_state : Tensor): # x (B,T,C), x_state (B,C)
+        x = self.prenorm(hidden_state_in)
+        x_state_out = x[:, -1]
 
         # token shift the incoming token embeddings for both the input projection and gate
-        inx, gatex = token_shift(x, x_state, self.Wlerp_in, self.Wlerp_g)
+        x, gatex = token_shift(x, x_state, self.Wlerp_in, self.Wlerp_g)
 
         # project to 3x larger hidden dimension
         # this is 4x for vanilla transformers FFN, but it's typical to reduce it when adding new parameters 
         #  to allow comparison models with the same number of total parameters for a given d_model, n_layer
         # in rwkv5's case, if you drop it down to 3x you end up making up for the extra parameters in the gate
-        hidden = self.Win(inx)
+        x = self.Win(x)
 
         # relu^2 activation function
-        hidden = torch.square(torch.relu(hidden))
+        x = torch.square(torch.relu(x))
 
         # project back out to d_model
-        out = self.Wout(hidden)
+        x = self.Wout(x)
 
         # apply sigmoid gate
         gate = self.Wgate(gatex)
-        out = out * torch.sigmoid(gate)
+        x = x * torch.sigmoid(gate)
 
-        return x + out, x[:, -1]
+        return hidden_state_in + x, x_state_out
 
 
 if __name__ == "__main__":
