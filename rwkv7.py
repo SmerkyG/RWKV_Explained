@@ -1,6 +1,7 @@
 import math
 import torch
 from torch import nn, Tensor
+from dataclasses import dataclass
 
 # config is unchanged from RWKV5
 from rwkv5_2 import Config
@@ -29,7 +30,7 @@ class LayerState:
         # a (B,C) size tensor representing latest time mixer token embedding processed
         self.time_mixer_x_state = torch.zeros(B,C,dtype=x.dtype,device=x.device)
         # an (B,H,V,K) size tensor representing a decaying token embedding memory for each head, where H=number_of_heads, K=key_dim_per_head, V=value_dim_per_head 
-        self.vk_state = torch.zeros(B,H,V,K,dtype=x.dtype,device=x.device)
+        self.vk_state = torch.zeros(B,H,V,K,dtype=torch.float,device=x.device)
         # a (B,C) size tensor representing latest channel mixer token embedding processed
         self.channel_mixer_x_state = torch.zeros(B,C,dtype=x.dtype,device=x.device)
 
@@ -110,7 +111,15 @@ class LoRA(nn.Module):
         # the offset is calculated by taking token shifted x and squeezing it through shrinking and expanding linear layers
         # this offers greatly reduced cost in terms of both computation and parameters than a single dim->dim linear layer
         return self.base + self.activation_fn( x @ self.W_a ) @ self.W_b
-        
+
+@dataclass
+class LoRAScales:
+    min_d_model:int
+    decay_lora:int
+    iclr_lora:int
+    v0_mix_amt_lora:int
+    gate_lora:int
+
 class TimeMixer(nn.Module):
     def __init__(self, cfg:Config, layer_id:int):
         super().__init__()
@@ -127,20 +136,29 @@ class TimeMixer(nn.Module):
         self.value = nn.Linear(d_model, d_model, bias=False)
         self.output = nn.Linear(d_model, d_model, bias=False)
 
-        lora_scale = 1 if d_model < 4096 else 2 # 1x for emb 768, change it for smaller/larger models
+        lora_ranks_by_dim = [
+            LoRAScales(min_d_model=0,    decay_lora=64,  iclr_lora=64,  v0_mix_amt_lora=32,  gate_lora=128),
+            LoRAScales(min_d_model=4096, decay_lora=192, iclr_lora=96,  v0_mix_amt_lora=96,  gate_lora=384),
+            LoRAScales(min_d_model=6144, decay_lora=256, iclr_lora=128, v0_mix_amt_lora=128, gate_lora=512),
+        ]
+        # find lora ranks for current d_model
+        for lora_ranks_iter in lora_ranks_by_dim:
+            if lora_ranks_iter.min_d_model > d_model:
+                break
+            lora_ranks = lora_ranks_iter
         
-        self.decay_lora = LoRA(d_model, 64 * lora_scale, has_base=True, activation_fn=torch.tanh, init_value=torch.ones(1, 1, d_model))
+        self.decay_lora = LoRA(d_model, lora_ranks.decay_lora, has_base=True, activation_fn=torch.tanh, init_value=torch.ones(1, 1, d_model))
         
-        self.iclr_lora = LoRA(d_model, 64 * lora_scale)
+        self.iclr_lora = LoRA(d_model, lora_ranks.iclr_lora)
 
         self.deformed_key_multiplier = nn.Parameter(torch.ones(1, 1, d_model))
         
-        self.gate_lora = LoRA(d_model, 128 * lora_scale, has_base=False, activation_fn=torch.sigmoid)
+        self.gate_lora = LoRA(d_model, lora_ranks.gate_lora, has_base=False, activation_fn=torch.sigmoid)
 
         self.iclr_mix_amt = nn.Parameter(torch.ones(1, 1, d_model))
 
         if layer_id > 0:
-            self.v0_mix_amt_lora = LoRA(d_model, 32 * lora_scale)
+            self.v0_mix_amt_lora = LoRA(d_model, lora_ranks.v0_mix_amt_lora)
 
         # per-channel boost for current embedding
         self.bonus = nn.Parameter(torch.ones(1, 1, cfg.n_heads, cfg.d_model//cfg.n_heads))
@@ -238,7 +256,7 @@ class TimeMixer(nn.Module):
         # decay is generated using a LoRA-MLP low parameter method, and then soft clamped to the range [-inf, -0.5]
         log_neglog_of_decay = self.decay_lora(x_decay)                              # BTC
         log_neglog_of_decay = -0.5 - nn.functional.softplus(-log_neglog_of_decay)   # BTC
-        log_of_decay = -torch.exp(log_neglog_of_decay)
+        log_of_decay = -torch.exp(log_neglog_of_decay.float())
         decay = log_of_decay.exp()
 
         # the next section is hard to understand unless you first understand how RWKV-7 modifies the delta rule:

@@ -6,6 +6,7 @@ def main():
     if len(sys.argv) not in (2, 3):
         print("Usage:")
         print("  python3 inference.py [model_path] [rwkv_module_path]")
+        exit(-1)
 
     rwkv_module_path = sys.argv[2] if len(sys.argv) >= 3 else 'rwkv7'
     model_path = sys.argv[1]
