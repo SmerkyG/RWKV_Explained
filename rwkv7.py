@@ -113,7 +113,7 @@ class LoRA(nn.Module):
         return self.base + self.activation_fn( x @ self.W_a ) @ self.W_b
 
 @dataclass
-class LoRAScales:
+class LoRARanks:
     min_d_model:int
     decay_lora:int
     iclr_lora:int
@@ -137,9 +137,10 @@ class TimeMixer(nn.Module):
         self.output = nn.Linear(d_model, d_model, bias=False)
 
         lora_ranks_by_dim = [
-            LoRAScales(min_d_model=0,    decay_lora=64,  iclr_lora=64,  v0_mix_amt_lora=32,  gate_lora=128),
-            LoRAScales(min_d_model=4096, decay_lora=192, iclr_lora=96,  v0_mix_amt_lora=96,  gate_lora=384),
-            LoRAScales(min_d_model=6144, decay_lora=256, iclr_lora=128, v0_mix_amt_lora=128, gate_lora=512),
+            LoRARanks(min_d_model=0,    decay_lora=64,  iclr_lora=64,  v0_mix_amt_lora=32,  gate_lora=128),
+            LoRARanks(min_d_model=2048, decay_lora=96,  iclr_lora=64,  v0_mix_amt_lora=64,  gate_lora=256),
+            LoRARanks(min_d_model=4096, decay_lora=192, iclr_lora=96,  v0_mix_amt_lora=96,  gate_lora=384),
+            LoRARanks(min_d_model=6144, decay_lora=256, iclr_lora=128, v0_mix_amt_lora=128, gate_lora=512),
         ]
         # find lora ranks for current d_model
         for lora_ranks_iter in lora_ranks_by_dim:
