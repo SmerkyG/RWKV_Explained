@@ -138,7 +138,7 @@ class TimeMixer(nn.Module):
 
         lora_ranks_by_dim = [
             LoRARanks(min_d_model=0,    decay_lora=64,  iclr_lora=64,  v0_mix_amt_lora=32,  gate_lora=128),
-            LoRARanks(min_d_model=2048, decay_lora=96,  iclr_lora=64,  v0_mix_amt_lora=64,  gate_lora=256),
+            LoRARanks(min_d_model=2048, decay_lora=128, iclr_lora=64,  v0_mix_amt_lora=64,  gate_lora=256),
             LoRARanks(min_d_model=4096, decay_lora=192, iclr_lora=96,  v0_mix_amt_lora=96,  gate_lora=384),
             LoRARanks(min_d_model=6144, decay_lora=256, iclr_lora=128, v0_mix_amt_lora=128, gate_lora=512),
         ]
