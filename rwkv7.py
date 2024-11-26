@@ -401,7 +401,7 @@ def convert_params_from_pth(model_params):
         '.time_aaa_w1' : '.iclr_lora.W_a',
         '.time_aaa_w2' : '.iclr_lora.W_b',
 
-        # iclr_lora
+        # gate_lora
         '.gate_w1' : '.gate_lora.W_a',
         '.gate_w2' : '.gate_lora.W_b',
 
