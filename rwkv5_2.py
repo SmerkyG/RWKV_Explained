@@ -140,6 +140,7 @@ class TimeMixer(nn.Module):
         x_shifted_one_to_the_past = torch.cat((x_state.unsqueeze(-2), x[:,:-1]), dim=1)
 
         # token shift the incoming token embeddings for the receptance, key, value, and gate
+        # PLEASE NOTE THAT THE DIRECTION OF THE LERP CHANGED IN RWKV-6
         x_receptance = torch.lerp(x_shifted_one_to_the_past, x, self.tokenshift_receptance)
         x_key = torch.lerp(x_shifted_one_to_the_past, x, self.tokenshift_key)
         x_value = torch.lerp(x_shifted_one_to_the_past, x, self.tokenshift_value)
