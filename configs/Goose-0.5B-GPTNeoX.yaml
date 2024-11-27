@@ -1,0 +1,7 @@
+module_path: rwkv7
+tokenizer: EleutherAI/gpt-neox-20b
+model:
+  n_layers: 12
+  d_model: 768
+  n_heads: 12
+  vocab_size: 50304
