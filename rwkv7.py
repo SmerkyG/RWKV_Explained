@@ -38,11 +38,11 @@ class RWKV(torch.nn.Module):
     def __init__(self, cfg:Config = Config()):
         super().__init__()
         self.cfg = cfg
-        self.embed = nn.Parameter(torch.empty(cfg.n_embed, cfg.d_model))
+        self.embed = nn.Parameter(torch.empty(cfg.vocab_size, cfg.d_model))
         self.embed_norm = nn.LayerNorm(cfg.d_model)
         self.layers = nn.ModuleList([Layer(cfg, layer_id) for layer_id in range(cfg.n_layers)])
         self.lm_head_norm = nn.LayerNorm(cfg.d_model)
-        self.lm_head_unembed = nn.Linear(cfg.d_model, cfg.n_embed, bias=False)
+        self.lm_head_unembed = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
 
     def _init_weights(self, module):
         with torch.no_grad():
@@ -204,7 +204,6 @@ class TimeMixer(nn.Module):
 
         # transform inputs from BHK into column vectors BHK1, and put everything in float format for higher precision
         r, k, v, decay, iclr, deformed_key = map(lambda x: x.unsqueeze(-1).float(), (r, k, v, decay, iclr, deformed_key))
-        vk_state = vk_state.float()
 
         # decay the kv state and remove the iclr amount of the value stored within the state at the deformed key
         vk_state = vk_state * decay.mT - vk_state @ deformed_key @ (iclr * deformed_key).mT

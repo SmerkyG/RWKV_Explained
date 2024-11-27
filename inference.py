@@ -1,43 +1,48 @@
 from pydoc import locate
-import torch, sys
+import torch, sys, os
 from torch.nn import functional as F
+import yaml
+from transformers import AutoTokenizer
 
 def main():
-    if len(sys.argv) not in (2, 3):
+    if len(sys.argv) != 3:
         print("Usage:")
-        print("  python3 inference.py [model_path] [rwkv_module_path]")
+        print("  python3 inference.py config_path model_path")
         exit(-1)
 
-    rwkv_module_path = sys.argv[2] if len(sys.argv) >= 3 else 'rwkv7'
-    model_path = sys.argv[1]
+    cfg_path = sys.argv[1]
+    model_path = sys.argv[2]
+    with open(cfg_path, mode="rt", encoding="utf-8") as file:
+        config = yaml.load(file, yaml.SafeLoader)
+
+    module_path = config['module_path']
    
-    rwkv_module = locate(rwkv_module_path)
+    rwkv_module = locate(module_path)
     if rwkv_module is None:
-        print(f"No rwkv module found at {rwkv_module_path}")
+        print(f"No rwkv module found at {module_path}")
         exit(-1)
 
     RWKV = rwkv_module.RWKV
     Config = rwkv_module.Config
     convert_params_from_pth = rwkv_module.convert_params_from_pth
 
-    config = Config()
+    model_config = Config(**config['model'])
 
-    from tokenizers import Tokenizer
-    tokenizer = Tokenizer.from_file("20B_tokenizer.json")
+    tokenizer = AutoTokenizer.from_pretrained(config['tokenizer'])
 
-    # DTYPE = torch.bfloat16
-    DTYPE = torch.half # better
+    DTYPE = torch.bfloat16
+    #DTYPE = torch.half # better for RWKV-7
 
     # model download: https://huggingface.co/BlinkDL/temp-latest-training-models/tree/main
     model_params = torch.load(model_path, weights_only=True)
     model_params = convert_params_from_pth(model_params)
 
     with torch.no_grad():
-        model = RWKV(config).to(dtype=DTYPE).cuda()
+        model = RWKV(model_config).to(dtype=DTYPE).cuda()
         model.load_state_dict(model_params)
 
     prompt = "The Eiffel tower is in the city of"
-    input = tokenizer.encode(prompt).ids
+    input = tokenizer.encode(prompt)
     print(f'\nInput:\n{input}')
 
     out, state = model.forward(torch.tensor(input).reshape(1,-1).cuda())
