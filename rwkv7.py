@@ -166,7 +166,7 @@ class TimeMixer(nn.Module):
             self.v0_mix_amt_lora = LoRA(d_model, lora_rank_value_residual_mix)
 
         # per-channel boost for current embedding
-        self.bonus = nn.Parameter(torch.ones(1, 1, cfg.n_heads, cfg.d_model//cfg.n_heads))
+        self.bonus = nn.Parameter(torch.ones(cfg.n_heads, cfg.d_model // cfg.n_heads))
 
         self.group_norm = nn.GroupNorm(cfg.n_heads, cfg.d_model, eps=64e-5)
 
@@ -365,7 +365,7 @@ if __name__ == "__main__":
     model = RWKV()
     model.forward(torch.ones(1,2,dtype=torch.long))
 
-def convert_params_from_pth(model_params):   
+def convert_params_from_pth(model_params):
     # map the state dict entries to our naming convention
 
     model_params['embed'] = model_params.pop('emb.weight')
@@ -377,60 +377,61 @@ def convert_params_from_pth(model_params):
     model_params['lm_head_unembed.weight'] = model_params.pop('head.weight')
 
     replacements = {
-        '.ln1.weight' : '.time_mixer.prenorm.weight',
-        '.ln1.bias' : '.time_mixer.prenorm.bias',
+        '.ln1.weight': '.time_mixer.prenorm.weight',
+        '.ln1.bias': '.time_mixer.prenorm.bias',
 
-        '.ln2.weight' : '.channel_mixer.prenorm.weight',
-        '.ln2.bias' : '.channel_mixer.prenorm.bias',
+        '.ln2.weight': '.channel_mixer.prenorm.weight',
+        '.ln2.bias': '.channel_mixer.prenorm.bias',
 
         # time mixer token shift lerps
-        '.att.time_maa_r' : '.time_mixer.tokenshifts.0',
-        '.att.time_maa_w' : '.time_mixer.tokenshifts.1',
-        '.att.time_maa_k' : '.time_mixer.tokenshifts.2',
-        '.att.time_maa_v' : '.time_mixer.tokenshifts.3',
-        '.att.time_maa_a' : '.time_mixer.tokenshifts.4',
-        '.att.time_maa_g' : '.time_mixer.tokenshifts.5',
+        '.att.x_r': '.time_mixer.tokenshifts.0',
+        '.att.x_w': '.time_mixer.tokenshifts.1',
+        '.att.x_k': '.time_mixer.tokenshifts.2',
+        '.att.x_v': '.time_mixer.tokenshifts.3',
+        '.att.x_a': '.time_mixer.tokenshifts.4',
+        '.att.x_g': '.time_mixer.tokenshifts.5',
 
         # bonus
-        '.time_faaaa' : '.bonus',
+        '.r_k': '.bonus',
 
         # decay_lora
-        '.time_decay' : '.decay_lora.base',
-        '.time_decay_w1' : '.decay_lora.W_a',
-        '.time_decay_w2' : '.decay_lora.W_b',
-
+        '.w0': '.decay_lora.base',
+        '.w1': '.decay_lora.W_a',
+        '.w2': '.decay_lora.W_b',
         # iclr_lora
-        '.time_aaaaa' : '.iclr_lora.base',
-        '.time_aaa_w1' : '.iclr_lora.W_a',
-        '.time_aaa_w2' : '.iclr_lora.W_b',
+        '.a0': '.iclr_lora.base',
+        '.a1': '.iclr_lora.W_a',
+        '.a2': '.iclr_lora.W_b',
 
         # gate_lora
-        '.gate_w1' : '.gate_lora.W_a',
-        '.gate_w2' : '.gate_lora.W_b',
+        '.g1': '.gate_lora.W_a',
+        '.g2': '.gate_lora.W_b',
 
         # v0_mix_amt_lora
-        '.time_misc_v' : '.v0_mix_amt_lora.base',
-        '.mv_w1' : '.v0_mix_amt_lora.W_a',
-        '.mv_w2' : '.v0_mix_amt_lora.W_b',
+        '.v0': '.v0_mix_amt_lora.base',
+        '.v1': '.v0_mix_amt_lora.W_a',
+        '.v2': '.v0_mix_amt_lora.W_b',
 
         # deformed_key_multiplier
-        '.time_misc_kkk' : '.deformed_key_multiplier',
+        '.k_k': '.deformed_key_multiplier',
 
         # iclr_mix_amt
-        '.time_misc_a' : '.iclr_mix_amt',
+        '.k_a': '.iclr_mix_amt',
 
         # group_norm
-        '.ln_x.weight' : '.group_norm.weight',
-        '.ln_x.bias' : '.group_norm.bias',
+        '.ln_x.weight': '.group_norm.weight',
+        '.ln_x.bias': '.group_norm.bias',
 
         # channel mixer
-        '.ffn.time_maa_k' : '.channel_mixer.tokenshift',
-        '.ffn.key.weight' : '.channel_mixer.W_in.weight',
-        '.ffn.value.weight' : '.channel_mixer.W_out.weight',
+        '.ffn.x_k': '.channel_mixer.tokenshift',
+        '.ffn.key.weight': '.channel_mixer.W_in.weight',
+        '.ffn.value.weight': '.channel_mixer.W_out.weight',
     }
 
     for k in list(model_params.keys()):
         p = model_params.pop(k)
+        if k.endswith(".ln0.weight") or k.endswith('.ln0.bias'):
+            continue
 
         for needle, replacement in replacements.items():
             if k.endswith(needle):
