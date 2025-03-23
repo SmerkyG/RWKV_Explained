@@ -3,10 +3,19 @@ import torch
 from torch import nn, Tensor
 from dataclasses import dataclass
 
-# config is unchanged from RWKV5
-from rwkv5_2 import Config
-
 from typing import Callable
+
+@dataclass
+class Config():
+    vocab_size:int=50304
+    d_model:int=768
+    n_heads:int=12
+    n_layers:int=12
+    d_ffn:int|None=None
+    lora_rank_decay:int|None = None
+    lora_rank_iclr:int|None = None
+    lora_rank_value_residual_mix:int|None = None
+    lora_rank_gate:int|None = None
 
 def ortho_init(x, scale):
     with torch.no_grad():
@@ -136,30 +145,25 @@ class TimeMixer(nn.Module):
         self.value = nn.Linear(d_model, d_model, bias=False)
         self.output = nn.Linear(d_model, d_model, bias=False)
 
-        lora_ranks_by_dim = [
-            LoRARanks(min_d_model=0,    decay_lora=64,  iclr_lora=64,  v0_mix_amt_lora=32,  gate_lora=128),
-            LoRARanks(min_d_model=2048, decay_lora=128, iclr_lora=64,  v0_mix_amt_lora=64,  gate_lora=256),
-            LoRARanks(min_d_model=4096, decay_lora=192, iclr_lora=96,  v0_mix_amt_lora=96,  gate_lora=384),
-            LoRARanks(min_d_model=6144, decay_lora=256, iclr_lora=128, v0_mix_amt_lora=128, gate_lora=512),
-        ]
         # find lora ranks for current d_model
-        for lora_ranks_iter in lora_ranks_by_dim:
-            if lora_ranks_iter.min_d_model > d_model:
-                break
-            lora_ranks = lora_ranks_iter
+        calc_lora_rank = lambda exponent, multiplier: max(1, round(d_model ** exponent * multiplier / 32)) * 32
+        lora_rank_decay = cfg.lora_rank_decay or calc_lora_rank(0.5, 1.8)
+        lora_rank_iclr = cfg.lora_rank_iclr or calc_lora_rank(0.5, 1.8)
+        lora_rank_value_residual_mix = cfg.lora_rank_value_residual_mix or calc_lora_rank(0.5, 1.3)
+        lora_rank_gate = cfg.lora_rank_gate or calc_lora_rank(0.8, 0.6)
         
-        self.decay_lora = LoRA(d_model, lora_ranks.decay_lora, has_base=True, activation_fn=torch.tanh, init_value=torch.ones(1, 1, d_model))
+        self.decay_lora = LoRA(d_model, lora_rank_decay, has_base=True, activation_fn=torch.tanh, init_value=torch.ones(1, 1, d_model))
         
-        self.iclr_lora = LoRA(d_model, lora_ranks.iclr_lora)
+        self.iclr_lora = LoRA(d_model, lora_rank_iclr)
 
         self.deformed_key_multiplier = nn.Parameter(torch.ones(1, 1, d_model))
         
-        self.gate_lora = LoRA(d_model, lora_ranks.gate_lora, has_base=False, activation_fn=torch.sigmoid)
+        self.gate_lora = LoRA(d_model, lora_rank_gate, has_base=False, activation_fn=torch.sigmoid)
 
         self.iclr_mix_amt = nn.Parameter(torch.ones(1, 1, d_model))
 
         if layer_id > 0:
-            self.v0_mix_amt_lora = LoRA(d_model, lora_ranks.v0_mix_amt_lora)
+            self.v0_mix_amt_lora = LoRA(d_model, lora_rank_value_residual_mix)
 
         # per-channel boost for current embedding
         self.bonus = nn.Parameter(torch.ones(1, 1, cfg.n_heads, cfg.d_model//cfg.n_heads))
